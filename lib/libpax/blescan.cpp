@@ -260,6 +260,19 @@ void hci_evt_process(void *pvParameters) {
   vTaskDelete(NULL);
 }
 
+#ifdef LIBPAX_BLE
+// undo controller start when scanner setup fails part way
+static void ble_controller_off(void) {
+#ifdef LIBPAX_ARDUINO
+  btStop();
+#endif
+#ifdef LIBPAX_ESPIDF
+  esp_bt_controller_disable();
+  esp_bt_controller_deinit();
+#endif
+}
+#endif
+
 void start_BLE_scan(uint16_t blescantime, uint16_t blescanwindow,
                     uint16_t blescaninterval) {
 #ifdef LIBPAX_BLE
@@ -280,6 +293,7 @@ void start_BLE_scan(uint16_t blescantime, uint16_t blescanwindow,
     adv_queue = xQueueCreate(BLE_ADV_QUEUE_SIZE, sizeof(host_rcv_data_t));
     if (adv_queue == NULL) {
       ESP_LOGE(TAG, "Queue creation failed");
+      ble_controller_off();
       return;
     }
 
@@ -287,8 +301,15 @@ void start_BLE_scan(uint16_t blescantime, uint16_t blescanwindow,
     hci_task_stop_requested = false;
     hci_task_exited = false;
     hci_eventprocessor = NULL;
-    xTaskCreate(&hci_evt_process, "hci_evt_process", 2048, NULL, 1,
-                &hci_eventprocessor);
+    if (xTaskCreate(&hci_evt_process, "hci_evt_process", 2048, NULL, 1,
+                    &hci_eventprocessor) != pdPASS) {
+      ESP_LOGE(TAG, "HCI event task creation failed");
+      hci_eventprocessor = NULL;
+      vQueueDelete(adv_queue);
+      adv_queue = NULL;
+      ble_controller_off();
+      return;
+    }
 
     esp_vhci_host_register_callback(&vhci_host_cb);
 
